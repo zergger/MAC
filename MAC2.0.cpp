@@ -1,6 +1,8 @@
 # include<bits/stdc++.h>
 # include<sys/stat.h>
+# include<filesystem>
 using namespace std;
+namespace fs = std::filesystem;
 # define bug puts("H");
 # define SZ(x) (int)x.size()
 # define pb push_back
@@ -23,13 +25,56 @@ Vi qpre, qnxt, rpre, rnxt, qds, rds;
 vector<bool> qtelo, rtelo, vis;
 vector<string> contig;
 int q_size = -1, r_size = -1, gene_num = 0;
+int thread_num = 1;
+bool thread_set = false;
+string nucmer_extra_args;
+
+void ensureFolders() {
+    std::error_code ec;
+    fs::create_directories(input_folder, ec);
+    fs::create_directories(output_folder, ec);
+    fs::create_directories(temp_folder, ec);
+}
+
+int parseThreads(const char * s) {
+    if (!s || !s[0]) {
+        puts("error: Thread number is empty!");
+        exit(1);
+    }
+    char * end = nullptr;
+    long val = strtol(s, &end, 10);
+    if (*end != '\0' || val <= 0) {
+        puts("error: Thread number must be a positive integer!");
+        exit(1);
+    }
+    return (int)val;
+}
+
+bool isIntegerArg(const char * s) {
+    if (!s || !s[0]) return false;
+    char * end = nullptr;
+    strtol(s, &end, 10);
+    return *end == '\0';
+}
 
 void checkFile(int argc, char * argv[]) {
-    if (argc != 3) {
+    if (argc != 3 && argc != 4 && argc != 5) {
         puts("error: Wrong number of parameters!");
         exit(0);
     }
     qcontig_file = argv[1]; rcontig_file = argv[2];
+    if (argc == 4) {
+        if (isIntegerArg(argv[3])) {
+            thread_num = parseThreads(argv[3]);
+            thread_set = true;
+        } else {
+            nucmer_extra_args = argv[3];
+        }
+    } else if (argc == 5) {
+        thread_num = parseThreads(argv[3]);
+        thread_set = true;
+        nucmer_extra_args = argv[4];
+    }
     int qlen = SZ(qcontig_file), rlen = SZ(rcontig_file);
     if (qlen <= 3 || rlen <= 3 || qcontig_file.substr(qlen-3, 3) != ".fa" || rcontig_file.substr(rlen-3, 3) != ".fa") {
         puts("error: Parameters format error!");
@@ -47,9 +92,14 @@ void cleanContig() {
     ifstream in1(qcontig_file.c_str()), in2(rcontig_file.c_str());
     qcontig_file += ".fasta"; rcontig_file += ".fasta";
     ofstream out1(qcontig_file.c_str()), out2(rcontig_file.c_str());
+    if (!in1 || !in2 || !out1 || !out2) {
+        puts("error: Failed to open contig files!");
+        exit(1);
+    }
     int num = 0;
     string line;
     while (getline(in1, line)) {
+        if (line.empty()) continue;
         if (line[0] == '>') {
             if (num) out1 << endl;
             out1 << ">" << ++num << endl;
@@ -58,6 +108,7 @@ void cleanContig() {
     }
     num = 0; in1.close(); out1.close();
     while (getline(in2, line)) {
+        if (line.empty()) continue;
         if (line[0] == '>') {
             if (num) out2 << endl;
             out2 << ">" << ++num << endl;
@@ -79,6 +130,12 @@ Vi findNumbers(string & line, Vi & inc) {
             if (j+1 == sz || !isdigit(line[j+1])) numarr.pb(num), num = 0;
         }
     }
+    int need = 0;
+    for (auto i: inc) need = max(need, i);
+    if (SZ(numarr) < need) {
+        puts("error: Coords format error!");
+        exit(1);
+    }
     for (auto i: inc) res.pb(numarr[i-1]);
     return res;
 }
@@ -99,6 +156,10 @@ void addGene(int contig_id, int gene_id, int setid) {
 void buildContig() {
     string coords_path = temp_folder + "/cssseq.coords";
     ifstream coords(coords_path.c_str());
+    if (!coords) {
+        puts("error: Coords file does not exist!");
+        exit(1);
+    }
     string line;
     Vi inc = {1,2,3,4,13,14};
     int invaild_line = 5;
@@ -164,7 +225,7 @@ Pi findCycle(int x) {
 
 int findQSet(int x){return qds[x] = (qds[x] == x ? x : findQSet(qds[x]));}
 
-int findRSet(int x){return rds[x] = (rds[x] == x ? x : findQSet(rds[x]));}
+int findRSet(int x){return rds[x] = (rds[x] == x ? x : findRSet(rds[x]));}
 
 void unionQPath(int x, int y) {
     int xpre = qpre[x], ypre = qpre[y];
@@ -195,16 +256,29 @@ void reverseContig(string & s) {
     reverse(all(s));
 }
 
+void runOrExit(const string & cmd, const string & step) {
+    int ret = system(cmd.c_str());
+    if (ret != 0) {
+        cerr << "error: " << step << " failed with code " << ret << endl;
+        exit(1);
+    }
+}
 
 int main (int argc, char * argv[])
 {
+    ensureFolders();
 // generate .coords file
     checkFile(argc, argv);
     cleanContig();
-    string cmd1 = "nucmer " + rcontig_file + " " + qcontig_file + " -p " + temp_folder + "/cssseq";
+    string cmd1 = "nucmer ";
+    if (thread_set) cmd1 += "--threads=" + to_string(thread_num) + " ";
+    if (!nucmer_extra_args.empty()) cmd1 += nucmer_extra_args + " ";
+    cmd1 += rcontig_file + " " + qcontig_file + " -p " + temp_folder + "/cssseq";
     string cmd2 = "delta-filter -r -q " + temp_folder + "/cssseq.delta > " + temp_folder + "/cssseq.filter";
     string cmd3 = "show-coords -l -d "  + temp_folder + "/cssseq.filter > " + temp_folder + "/cssseq.coords";
-    system(cmd1.c_str()); system(cmd2.c_str()); system(cmd3.c_str());
+    runOrExit(cmd1, "nucmer");
+    runOrExit(cmd2, "delta-filter");
+    runOrExit(cmd3, "show-coords");
 // represent contig  as a linear permutation
     buildContig();
 // make the most rings in the adjacency graph
@@ -226,12 +300,12 @@ int main (int argc, char * argv[])
     ofstream output((output_folder+"/scaffold.fasta").c_str());
     string line;
     while (getline(input, line)) {
+        if (line.empty()) continue;
         if (line[0] == '>') continue;
         contig.pb(line);
     }
     input.close();
-    int scaffold_num = 0, g_num = 0, sum_len = 0;
-    Vi temp;
+    int scaffold_num = 0;
     rep(i,1,2*gene_num) {
         if (qtelo[i] == false) continue;
         output << ">Scaffold_" << ++scaffold_num << endl;
@@ -242,10 +316,7 @@ int main (int argc, char * argv[])
             else line = contig[gene[abs(AntiMapping(x))-1].id].substr(gene[abs(AntiMapping(x))-1].l1-1, gene[abs(AntiMapping(x))-1].r1-gene[abs(AntiMapping(x))-1].l1+1);
             if (AntiMapping(x) < 0) reverseContig(line);
             output << line;
-            temp.pb(abs(AntiMapping(x)));
-            sum_len += SZ(line);
             x = qnxt[x];
-            ++g_num;
         }while (qtelo[x] == false);
         qtelo[x] = false;
         output << endl;
